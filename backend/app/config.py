@@ -17,6 +17,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+def _parse_ids(raw: str | None) -> set[int]:
+    """Turn '123, 456' into {123, 456}. Blank entries are ignored."""
+    if not raw:
+        return set()
+    return {int(part) for part in raw.split(",") if part.strip()}
+
+
+
 class Settings:
     """Holds all configuration values in one object."""
 
@@ -26,6 +34,9 @@ class Settings:
 
     photos_dir: Path = PROJECT_ROOT / "data" / "photos"
     sample_data_dir: Path = PROJECT_ROOT / "data" / "sample_data"
+
+    admin_ids: set[int] = _parse_ids(os.getenv("ADMIN_TELEGRAM_IDS"))
+    member_ids: set[int] = _parse_ids(os.getenv("MEMBER_TELEGRAM_IDS"))
 
 
 settings = Settings()
@@ -40,6 +51,9 @@ def check_settings() -> None:
         value = getattr(settings, name)
         status = "set" if value else "MISSING"
         print(f"{name:<19}: {status}")
+
+    print(f"Admins configured : {len(settings.admin_ids)}")
+    print(f"Members configured: {len(settings.member_ids)}")
 
 
 if __name__ == "__main__":
