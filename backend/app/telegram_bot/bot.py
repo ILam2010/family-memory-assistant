@@ -20,6 +20,10 @@ from app.config import settings
 from app.services.auth_service import get_member
 from app.telegram_bot.auth import DENIED_TEXT, require_admin, require_member
 
+from app.database.models import Role
+from app.database.session import SessionLocal, init_db
+from app.services import member_service
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -82,6 +86,38 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("You are an ADMIN. This command is admin-only.")
 
 
+@require_admin
+async def add_member_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: /add_member <telegram_id> <name>"""
+    if len(context.args) < 2 or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "Usage: /add_member <telegram_id> <name>\n"
+            "Example: /add_member 123456789 Mimi"
+        )
+        return
+    telegram_id = int(context.args[0])
+    name = " ".join(context.args[1:])[:100]
+    with SessionLocal() as session:
+        try:
+            member_service.create_member(session, telegram_id, name=name)
+        except ValueError:
+            await update.message.reply_text("That Telegram ID is already registered.")
+            return
+    await update.message.reply_text(f"Added {name} as a family MEMBER.")
+
+
+@require_admin
+async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: list family members."""
+    with SessionLocal() as session:
+        members = member_service.list_members(session)
+    lines = [
+        f"{m.id}. {m.name or '(no name)'} - {m.role.value} ({m.status.value})"
+        for m in members
+    ]
+    await update.message.reply_text("Family members:\n" + "\n".join(lines))
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Check your .env file.")
@@ -104,17 +140,19 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("whoami", whoami_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("admin_check", admin_check_command))
+    application.add_handler(CommandHandler("add_member", add_member_command))
+    application.add_handler(CommandHandler("members", members_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
     return application
 
 
 def main() -> None:
+    init_db()
+    with SessionLocal() as session:
+        member_service.seed_from_env(session)
+        total = len(member_service.list_members(session))
     application = build_application()
-    logger.info(
-        "Bot starting. Approved admins: %d, members: %d",
-        len(settings.admin_ids),
-        len(settings.member_ids),
-    )
+    logger.info("Bot starting. Members in database: %d", total)
     application.run_polling()
 
 
