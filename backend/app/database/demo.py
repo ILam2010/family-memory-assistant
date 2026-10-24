@@ -1,6 +1,6 @@
 """Throwaway demo: shows tables and relationships working. Uses memory only."""
 
-from datetime import date
+
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ with Session(engine) as session:
     mimi = FamilyMember(
         telegram_user_id=111, name="Mimi", family_relation="Mother", role=Role.ADMIN
     )
-    trip = Event(name="Hawassa Trip 2023", date=date(2023, 12, 27), location="Hawassa")
+    trip = Event(name="Hawassa Trip 2023", year=2023, month=12, day=27, location="Hawassa")
     session.add_all([mimi, trip])
     session.flush()  # assigns ids without finishing the transaction
 

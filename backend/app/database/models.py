@@ -1,12 +1,10 @@
 """Database table definitions (SQLAlchemy models)."""
 
 import enum
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Date, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, SmallInteger, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
-import datetime as dt
 
 
 def _now() -> datetime:
@@ -49,7 +47,10 @@ class Event(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
-    date: Mapped[dt.date | None] = mapped_column(Date)
+    # Partial date: year only, year+month, or a full day. All optional.
+    year: Mapped[int | None] = mapped_column(SmallInteger, index=True)
+    month: Mapped[int | None] = mapped_column(SmallInteger)
+    day: Mapped[int | None] = mapped_column(SmallInteger)
     location: Mapped[str | None] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text)
 
@@ -65,7 +66,10 @@ class Photo(Base):
     file_path: Mapped[str] = mapped_column(String(500))
     telegram_file_id: Mapped[str | None] = mapped_column(String(300))
     description: Mapped[str | None] = mapped_column(Text)
-    photo_date: Mapped[date | None] = mapped_column(Date)
+    # Partial date of when the photo was taken. All optional.
+    photo_year: Mapped[int | None] = mapped_column(SmallInteger, index=True)
+    photo_month: Mapped[int | None] = mapped_column(SmallInteger)
+    photo_day: Mapped[int | None] = mapped_column(SmallInteger)
     location: Mapped[str | None] = mapped_column(String(200))
     people: Mapped[str | None] = mapped_column(Text)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

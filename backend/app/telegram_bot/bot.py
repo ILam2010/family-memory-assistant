@@ -28,6 +28,9 @@ from telegram.error import TelegramError
 
 from app.services import photo_service, photo_storage
 
+from app.services import event_service
+from app.services.dates import format_partial_date, parse_partial_date
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -72,7 +75,13 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 @require_member
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Just send me a message. Later you'll be able to search and upload memories."
+        "Send me a photo (with a caption if you like) to save a memory.\n\n"
+        "/my_photos - your photos\n"
+        "/photo <number> - show a photo\n"
+        "/events - list family events\n"
+        "/new_event <name> | <date> | <location>\n"
+        "/edit <photo number> <field> <value> - add people, location, date, event\n"
+        "/skip - skip a description"
     )
 
 
@@ -181,18 +190,16 @@ async def photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if photo is None:
             await update.message.reply_text("I couldn't find a photo with that number.")
             return
-        file_path, description = photo.file_path, photo.description
+        file_path = photo.file_path
+        caption = photo_service.photo_summary(photo)
 
     try:
         path = photo_storage.resolve_photo_path(file_path)
         with open(path, "rb") as image:
-            await update.message.reply_photo(
-                photo=image, caption=(description or "")[:1000] or None
-            )
+            await update.message.reply_photo(photo=image, caption=caption[:1000] or None)
     except (OSError, ValueError):
         logger.exception("Could not send photo file %s", file_path)
         await update.message.reply_text("Sorry, I couldn't load that photo file.")
-
 
 # ---- Admins only -------------------------------------------------------------
 
@@ -233,6 +240,94 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("Family members:\n" + "\n".join(lines))
 
 
+@require_member
+async def new_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/new_event <name> | <date> | <location>   (date and location are optional)"""
+    usage = (
+        "Usage: /new_event <name> | <date> | <location>\n"
+        "Example: /new_event Hawassa Trip 2023 | December 2023 | Hawassa\n"
+        "Date and location are optional."
+    )
+    raw = update.message.text.partition(" ")[2].strip()
+    parts = [p.strip() for p in raw.split("|")]
+    name = parts[0][:200] if parts else ""
+    if not name:
+        await update.message.reply_text(usage)
+        return
+
+    year = month = day = None
+    if len(parts) > 1 and parts[1]:
+        try:
+            year, month, day = parse_partial_date(parts[1])
+        except ValueError as exc:
+            await update.message.reply_text(str(exc))
+            return
+    location = parts[2][:200] if len(parts) > 2 and parts[2] else None
+
+    with SessionLocal() as session:
+        event = event_service.create_event(
+            session, name, year=year, month=month, day=day, location=location
+        )
+        event_id = event.id
+    await update.message.reply_text(
+        f"Created event #{event_id}: {name}\n"
+        f"Link a photo to it with: /edit <photo number> event {event_id}"
+    )
+
+
+@require_member
+async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lines = []
+    with SessionLocal() as session:
+        for event, count in event_service.list_events_with_counts(session):
+            when = format_partial_date(event.year, event.month, event.day)
+            extras = ", ".join(x for x in (when, event.location) if x)
+            suffix = f" ({extras})" if extras else ""
+            lines.append(f"#{event.id}: {event.name}{suffix} - {count} photo(s)")
+    if not lines:
+        await update.message.reply_text("No events yet. Create one with /new_event.")
+        return
+    await update.message.reply_text("Events:\n" + "\n".join(lines))
+
+
+@require_member
+async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/edit <photo number> <field> <value>"""
+    usage = (
+        "Usage: /edit <photo number> <field> <value>\n"
+        "Fields: description, people, location, date, event\n\n"
+        "/edit 2 people Aster, Abel\n"
+        "/edit 2 location Hawassa\n"
+        "/edit 2 date December 2023\n"
+        "/edit 2 event 1   (see /events)"
+    )
+    text = update.message.text.partition(" ")[2].strip()
+    parts = text.split(None, 2)
+    if len(parts) < 3 or not parts[0].isdigit():
+        await update.message.reply_text(usage)
+        return
+
+    photo_id, field, value = int(parts[0]), parts[1].lower(), parts[2]
+    member = context.user_data["member"]
+    try:
+        with SessionLocal() as session:
+            photo_service.edit_photo(
+                session, photo_id, member.member_id, member.role == Role.ADMIN, field, value
+            )
+    except LookupError as exc:
+        what = "event" if str(exc).strip("'\"") == "event" else "photo"
+        await update.message.reply_text(f"I couldn't find that {what}.")
+        return
+    except PermissionError:
+        await update.message.reply_text("You can only edit photos you uploaded.")
+        return
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+
+    await update.message.reply_text(f"Updated {field} for photo #{photo_id}.")
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Check your .env file.")
@@ -260,6 +355,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("skip", skip_command))
     application.add_handler(CommandHandler("my_photos", my_photos_command))
     application.add_handler(CommandHandler("photo", photo_command))
+    application.add_handler(CommandHandler("new_event", new_event_command))
+    application.add_handler(CommandHandler("events", events_command))
+    application.add_handler(CommandHandler("edit", edit_command))
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return application
