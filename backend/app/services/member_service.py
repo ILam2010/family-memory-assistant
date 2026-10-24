@@ -58,3 +58,10 @@ def seed_from_env(session: Session) -> None:
     for telegram_id in settings.member_ids:
         if get_by_telegram_id(session, telegram_id) is None:
             create_member(session, telegram_id, role=Role.MEMBER)
+
+
+def set_name(session: Session, member_id: int, name: str) -> None:
+    member = session.get(FamilyMember, member_id)
+    if member is not None:
+        member.name = name
+        session.commit()

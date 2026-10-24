@@ -31,6 +31,8 @@ from app.services import photo_service, photo_storage
 from app.services import event_service
 from app.services.dates import format_partial_date, parse_partial_date
 
+from app.services import search_service
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -76,11 +78,13 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me a photo (with a caption if you like) to save a memory.\n\n"
+        "/search <words> - find photos (e.g. /search Christmas 2023)\n"
         "/my_photos - your photos\n"
         "/photo <number> - show a photo\n"
         "/events - list family events\n"
         "/new_event <name> | <date> | <location>\n"
         "/edit <photo number> <field> <value> - add people, location, date, event\n"
+        "/setname <name> - set your name\n"
         "/skip - skip a description"
     )
 
@@ -328,6 +332,62 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(f"Updated {field} for photo #{photo_id}.")
 
 
+@require_member
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/search <what you're looking for>"""
+    query = update.message.text.partition(" ")[2].strip()[:200]
+    if not query:
+        await update.message.reply_text(
+            "Usage: /search <what to look for>\n\n"
+            "/search photos from 2024\n"
+            "/search photos from Hawassa\n"
+            "/search Christmas 2023\n"
+            "/search pictures uploaded by Aster"
+        )
+        return
+
+    filters = search_service.parse_query(query)
+    if filters.is_empty():
+        await update.message.reply_text(
+            "I couldn't find anything to search for in that. "
+            "Try a year, a place, an event name or a person."
+        )
+        return
+
+    with SessionLocal() as session:
+        photos = search_service.search_photos(session, filters, limit=10)
+        lines = [search_service.format_result(photo) for photo in photos]
+
+    logger.info("Search by user id=%s: %d result(s)", update.effective_user.id, len(lines))
+
+    if not lines:
+        await update.message.reply_text(
+            f"I couldn't find any photos matching: {filters.describe()}."
+        )
+        return
+
+    note = " (newest 10 shown)" if len(lines) == 10 else ""
+    await update.message.reply_text(
+        f"Searched for: {filters.describe()}\n"
+        f"Found {len(lines)} photo(s){note}:\n\n"
+        + "\n".join(lines)
+        + "\n\nUse /photo <number> to see one."
+    )
+
+
+@require_member
+async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/setname <your name> : set the name shown for your account."""
+    name = update.message.text.partition(" ")[2].strip()[:100]
+    if not name:
+        await update.message.reply_text("Usage: /setname <your name>\nExample: /setname Mimi")
+        return
+    member = context.user_data["member"]
+    with SessionLocal() as session:
+        member_service.set_name(session, member.member_id, name)
+    await update.message.reply_text(f"Got it, your name is now {name}.")
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Check your .env file.")
@@ -358,6 +418,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("new_event", new_event_command))
     application.add_handler(CommandHandler("events", events_command))
     application.add_handler(CommandHandler("edit", edit_command))
+    application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("setname", setname_command))
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return application
