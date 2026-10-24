@@ -24,6 +24,10 @@ from app.database.models import Role
 from app.database.session import SessionLocal, init_db
 from app.services import member_service
 
+from telegram.error import TelegramError
+
+from app.services import photo_service, photo_storage
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -72,11 +76,122 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+MAX_DESCRIPTION_LENGTH = 2000
+
+
 @require_member
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text
-    logger.info("Message from id=%s (length %d)", update.effective_user.id, len(text))
-    await update.message.reply_text(f"You said: {text}")
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs when a family member sends a photo."""
+    message = update.message
+    member = context.user_data["member"]
+
+    largest = message.photo[-1]  # the list goes small -> large
+    relative_path, absolute_path = photo_storage.new_photo_location()
+
+    try:
+        telegram_file = await largest.get_file()
+        await telegram_file.download_to_drive(custom_path=absolute_path)
+    except TelegramError:
+        logger.exception("Photo download failed for user id=%s", update.effective_user.id)
+        await message.reply_text("Sorry, I couldn't download that photo. Please try again.")
+        return
+
+    caption = (message.caption or "").strip()[:MAX_DESCRIPTION_LENGTH] or None
+
+    with SessionLocal() as session:
+        photo = photo_service.create_photo(
+            session,
+            uploader_id=member.member_id,
+            file_path=relative_path,
+            telegram_file_id=largest.file_id,
+            description=caption,
+        )
+        photo_id = photo.id
+
+    logger.info("Photo #%s saved for user id=%s", photo_id, update.effective_user.id)
+
+    if caption:
+        context.user_data.pop("awaiting_description_for", None)
+        await message.reply_text(f"Saved photo #{photo_id} with your description.")
+    else:
+        context.user_data["awaiting_description_for"] = photo_id
+        await message.reply_text(
+            f"Saved photo #{photo_id}. Send me a description now "
+            "(for example: \"Our trip to Hawassa in 2024 with Grandma\"), "
+            "or send /skip."
+        )
+
+
+@require_member
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs for normal text messages."""
+    member = context.user_data["member"]
+    photo_id = context.user_data.get("awaiting_description_for")
+
+    if photo_id is None:
+        await update.message.reply_text(
+            "Send me a photo to save a memory. Searching memories is coming soon."
+        )
+        return
+
+    description = update.message.text.strip()[:MAX_DESCRIPTION_LENGTH]
+    with SessionLocal() as session:
+        updated = photo_service.set_description(
+            session, photo_id, member.member_id, description
+        )
+    context.user_data.pop("awaiting_description_for", None)
+
+    if updated:
+        await update.message.reply_text(f"Description saved for photo #{photo_id}.")
+    else:
+        await update.message.reply_text("Sorry, I couldn't attach that description.")
+
+
+@require_member
+async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("awaiting_description_for", None)
+    await update.message.reply_text("OK, no description for that photo.")
+
+
+@require_member
+async def my_photos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    member = context.user_data["member"]
+    with SessionLocal() as session:
+        photos = photo_service.list_by_uploader(session, member.member_id)
+    if not photos:
+        await update.message.reply_text("You haven't uploaded any photos yet.")
+        return
+    lines = [
+        f"#{p.id}: {(p.description or '(no description)')[:60]}" for p in photos[-20:]
+    ]
+    await update.message.reply_text(
+        f"You have {len(photos)} photo(s). Latest:\n" + "\n".join(lines)
+    )
+
+
+@require_member
+async def photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/photo <id> : send a stored photo back (family members can view all photos)."""
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /photo <number>\nExample: /photo 1")
+        return
+
+    with SessionLocal() as session:
+        photo = photo_service.get_photo(session, int(context.args[0]))
+        if photo is None:
+            await update.message.reply_text("I couldn't find a photo with that number.")
+            return
+        file_path, description = photo.file_path, photo.description
+
+    try:
+        path = photo_storage.resolve_photo_path(file_path)
+        with open(path, "rb") as image:
+            await update.message.reply_photo(
+                photo=image, caption=(description or "")[:1000] or None
+            )
+    except (OSError, ValueError):
+        logger.exception("Could not send photo file %s", file_path)
+        await update.message.reply_text("Sorry, I couldn't load that photo file.")
 
 
 # ---- Admins only -------------------------------------------------------------
@@ -142,7 +257,11 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("admin_check", admin_check_command))
     application.add_handler(CommandHandler("add_member", add_member_command))
     application.add_handler(CommandHandler("members", members_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    application.add_handler(CommandHandler("skip", skip_command))
+    application.add_handler(CommandHandler("my_photos", my_photos_command))
+    application.add_handler(CommandHandler("photo", photo_command))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return application
 
 

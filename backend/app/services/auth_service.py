@@ -13,6 +13,7 @@ from app.services import member_service
 
 @dataclass(frozen=True)
 class AuthenticatedMember:
+    member_id: int
     telegram_user_id: int
     name: str | None
     role: Role
@@ -24,7 +25,9 @@ def get_member(telegram_user_id: int) -> AuthenticatedMember | None:
         member = member_service.get_by_telegram_id(session, telegram_user_id)
         if member is None or member.status != MemberStatus.ACTIVE:
             return None
-        return AuthenticatedMember(member.telegram_user_id, member.name, member.role)
+        return AuthenticatedMember(
+            member.id, member.telegram_user_id, member.name, member.role
+        )
 
 
 def is_admin(member: AuthenticatedMember | None) -> bool:

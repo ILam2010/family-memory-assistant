@@ -6,6 +6,8 @@ from datetime import date, datetime, timezone
 from sqlalchemy import BigInteger, Date, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+import datetime as dt
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -47,7 +49,7 @@ class Event(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
-    date: Mapped[date | None] = mapped_column(Date)
+    date: Mapped[dt.date | None] = mapped_column(Date)
     location: Mapped[str | None] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text)
 
