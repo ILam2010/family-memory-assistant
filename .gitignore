@@ -16,5 +16,7 @@ data/chroma/
 *.sqlite
 *.sqlite3
 
+data/models/
+
 # Editor files
 .vscode/

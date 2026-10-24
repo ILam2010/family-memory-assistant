@@ -33,6 +33,7 @@ class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/family_memory.db")
 
     photos_dir: Path = PROJECT_ROOT / "data" / "photos"
+    embedding_cache_dir: Path = PROJECT_ROOT / "data" / "models"
     sample_data_dir: Path = PROJECT_ROOT / "data" / "sample_data"
 
     admin_ids: set[int] = _parse_ids(os.getenv("ADMIN_TELEGRAM_IDS"))
