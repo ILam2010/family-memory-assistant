@@ -34,3 +34,12 @@ def build_memory_text(photo: Photo) -> str:
         parts.append(" ".join(photo.description.split()))
 
     return " ".join(parts)
+
+
+def effective_year_month(photo: Photo) -> tuple[int | None, int | None]:
+    # The photo's own date if it has one, otherwise its event's date.
+    if photo.photo_year is not None:
+        return photo.photo_year, photo.photo_month
+    if photo.event is not None:
+        return photo.event.year, photo.event.month
+    return None, None

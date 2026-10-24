@@ -3,7 +3,7 @@
 Run from the backend/ folder:
     python -m app.telegram_bot.bot
 """
-
+import asyncio
 import logging
 
 from telegram import Update
@@ -32,6 +32,7 @@ from app.services import event_service
 from app.services.dates import format_partial_date, parse_partial_date
 
 from app.services import search_service
+from app.rag import indexing, retriever
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -88,6 +89,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/skip - skip a description"
     )
 
+async def _reindex_photo(photo_id: int) -> None:
+    
+    try:
+        await asyncio.to_thread(indexing.index_photo, photo_id)
+    except Exception:
+        logger.exception("Indexing failed for photo #%s (an admin can run /reindex)", photo_id)
+
 
 MAX_DESCRIPTION_LENGTH = 2000
 
@@ -122,6 +130,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         photo_id = photo.id
 
     logger.info("Photo #%s saved for user id=%s", photo_id, update.effective_user.id)
+    await _reindex_photo(photo_id)
 
     if caption:
         context.user_data.pop("awaiting_description_for", None)
@@ -155,6 +164,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data.pop("awaiting_description_for", None)
 
     if updated:
+        await _reindex_photo(photo_id)
         await update.message.reply_text(f"Description saved for photo #{photo_id}.")
     else:
         await update.message.reply_text("Sorry, I couldn't attach that description.")
@@ -329,6 +339,8 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(str(exc))
         return
 
+    await _reindex_photo(photo_id)
+
     await update.message.reply_text(f"Updated {field} for photo #{photo_id}.")
 
 
@@ -388,6 +400,38 @@ async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(f"Got it, your name is now {name}.")
 
 
+@require_member
+async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/find <words> : meaning-based search (experimental, shows scores)."""
+    query = update.message.text.partition(" ")[2].strip()[:200]
+    if not query:
+        await update.message.reply_text(
+            "Usage: /find <what you remember>\n"
+            "Example: /find the whole family was together"
+        )
+        return
+    hits = await asyncio.to_thread(
+        retriever.retrieve, query, 5, settings.semantic_min_score
+    )
+    if not hits:
+        await update.message.reply_text("I couldn't find a strong match for that.")
+        return
+    lines = [f"#{h.photo_id} (score {h.score:.2f}): {h.text[:80]}" for h in hits]
+    await update.message.reply_text(
+        "Closest memories:\n\n" + "\n".join(lines) + "\n\nUse /photo <number> to see one."
+    )
+
+
+@require_admin
+async def reindex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: rebuild the whole search index."""
+    await update.message.reply_text("Rebuilding the search index...")
+    indexed, skipped = await asyncio.to_thread(indexing.index_all)
+    await update.message.reply_text(
+        f"Done. {indexed} photo(s) indexed, {skipped} skipped (no text yet)."
+    )
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Check your .env file.")
@@ -420,6 +464,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("edit", edit_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("setname", setname_command))
+    application.add_handler(CommandHandler("find", find_command))
+    application.add_handler(CommandHandler("reindex", reindex_command))
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return application

@@ -39,6 +39,9 @@ class Settings:
     admin_ids: set[int] = _parse_ids(os.getenv("ADMIN_TELEGRAM_IDS"))
     member_ids: set[int] = _parse_ids(os.getenv("MEMBER_TELEGRAM_IDS"))
 
+    chroma_dir: Path = PROJECT_ROOT / "data" / "chroma"
+    semantic_min_score: float = float(os.getenv("SEMANTIC_MIN_SCORE", "0.55"))
+
 
 settings = Settings()
 
