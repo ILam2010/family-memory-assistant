@@ -42,6 +42,9 @@ class Settings:
     chroma_dir: Path = PROJECT_ROOT / "data" / "chroma"
     semantic_min_score: float = float(os.getenv("SEMANTIC_MIN_SCORE", "0.55"))
 
+    gemini_model: str | None = os.getenv("GEMINI_MODEL") or None
+    rag_top_k: int = 5
+
 
 settings = Settings()
 
@@ -51,7 +54,7 @@ def check_settings() -> None:
     print(f"Project root : {PROJECT_ROOT}")
     print(f"Photos folder: {settings.photos_dir} (exists: {settings.photos_dir.exists()})")
     print(f"Database URL : {settings.database_url}")
-    for name in ("telegram_bot_token", "gemini_api_key"):
+    for name in ("telegram_bot_token", "gemini_api_key", "gemini_model"):
         value = getattr(settings, name)
         status = "set" if value else "MISSING"
         print(f"{name:<19}: {status}")

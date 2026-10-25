@@ -34,6 +34,10 @@ from app.services.dates import format_partial_date, parse_partial_date
 from app.services import search_service
 from app.rag import indexing, retriever
 
+from telegram.constants import ChatAction
+
+from app.rag import pipeline
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -151,9 +155,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     photo_id = context.user_data.get("awaiting_description_for")
 
     if photo_id is None:
-        await update.message.reply_text(
-            "Send me a photo to save a memory. Searching memories is coming soon."
-        )
+        question = update.message.text.strip()[:500]
+        await update.effective_chat.send_action(ChatAction.TYPING)
+        answer = await asyncio.to_thread(pipeline.answer_question, question)
+        reply = answer.text
+        if answer.photo_ids:
+            reply += (
+                "\n\nRelated photos: "
+                + ", ".join(f"#{pid}" for pid in answer.photo_ids)
+                + "\n(Use /photo <number> to see one.)"
+            )
+        await update.message.reply_text(reply)
         return
 
     description = update.message.text.strip()[:MAX_DESCRIPTION_LENGTH]
