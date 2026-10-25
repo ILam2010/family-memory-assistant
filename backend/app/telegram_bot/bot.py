@@ -38,6 +38,8 @@ from telegram.constants import ChatAction
 
 from app.rag import pipeline
 
+from app.telegram_bot import photo_sender
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -158,14 +160,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         question = update.message.text.strip()[:500]
         await update.effective_chat.send_action(ChatAction.TYPING)
         answer = await asyncio.to_thread(pipeline.answer_question, question)
-        reply = answer.text
+        await update.message.reply_text(answer.text)
         if answer.photo_ids:
-            reply += (
-                "\n\nRelated photos: "
-                + ", ".join(f"#{pid}" for pid in answer.photo_ids)
-                + "\n(Use /photo <number> to see one.)"
-            )
-        await update.message.reply_text(reply)
+            sent = await photo_sender.send_photos(update.message, answer.photo_ids)
+            if sent == 0:
+                numbers = ", ".join(f"#{pid}" for pid in answer.photo_ids)
+                await update.message.reply_text(
+                    f"I found related photos ({numbers}) but couldn't load them "
+                    "right now. You can try /photo <number>."
+                )
         return
 
     description = update.message.text.strip()[:MAX_DESCRIPTION_LENGTH]
