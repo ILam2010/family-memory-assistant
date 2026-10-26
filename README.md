@@ -25,7 +25,7 @@ Family Memory Assistant is a private chatbot designed to help authorized family 
 
 Family members will be able to upload photographs, add descriptions, associate photos with people and events, and ask questions in natural language. The system will retrieve relevant stored memories and, when available, return the associated photographs through Telegram.
 
-The project will use **Retrieval-Augmented Generation (RAG)**. Instead of asking a language model to invent or guess family history, the backend will retrieve relevant records from the family-memory collection and use that evidence to generate an answer.
+The project uses **Retrieval-Augmented Generation (RAG)**. Instead of asking a language model to invent or guess family history, the backend will retrieve relevant records from the family-memory collection and use that evidence to generate an answer.
 
 
 ## Problem Statement
