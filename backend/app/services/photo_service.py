@@ -110,3 +110,18 @@ def photo_summary(photo: Photo) -> str:
     if when:
         lines.append(f"Date: {when}")
     return "\n".join(lines)
+
+def delete_photo(
+    session: Session, photo_id: int, requester_member_id: int, requester_is_admin: bool
+) -> str:
+    """Delete a photo's record. Returns its stored file path so the caller can
+    remove the file. Raises LookupError or PermissionError."""
+    photo = session.get(Photo, photo_id)
+    if photo is None:
+        raise LookupError("photo")
+    if photo.uploader_id != requester_member_id and not requester_is_admin:
+        raise PermissionError("not the uploader")
+    file_path = photo.file_path
+    session.delete(photo)
+    session.commit()
+    return file_path

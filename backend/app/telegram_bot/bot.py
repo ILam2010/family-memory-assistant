@@ -18,9 +18,9 @@ from telegram.ext import (
 
 from app.config import settings
 from app.services.auth_service import get_member
-from app.telegram_bot.auth import DENIED_TEXT, require_admin, require_member
+from app.telegram_bot.auth import DENIED_TEXT, public_command, require_admin, require_member
 
-from app.database.models import MessageRole, Role
+from app.database.models import MemberStatus, MessageRole, Role
 from app.database.session import SessionLocal, init_db
 from app.services import member_service
 
@@ -32,22 +32,19 @@ from app.services import event_service
 from app.services.dates import format_partial_date, parse_partial_date
 
 from app.services import search_service
-from app.rag import indexing, retriever
+from app.rag import indexing, retriever, vector_store
 
 from telegram.constants import ChatAction
 
 from app.rag import pipeline
 
-from app.telegram_bot import photo_sender
+from app.telegram_bot import photo_sender, rate_limit
 
 from app.services import conversation_service
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
-)
+from app.logging_setup import setup_logging
 
-logging.getLogger("httpx").setLevel(logging.WARNING)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 WELCOME_TEXT = (
@@ -61,6 +58,7 @@ WELCOME_TEXT = (
 
 # ---- Open to everyone (they must be able to get their ID) -------------------
 
+@public_command
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     member = get_member(user.id)
@@ -72,6 +70,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(f"{WELCOME_TEXT}\n\nYour role: {member.role.value}")
 
 
+@public_command
 async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tell anyone their own Telegram ID so they can ask the admin for access."""
     user = update.effective_user
@@ -95,7 +94,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/edit <photo number> <field> <value> - add people, location, date, event\n"
         "/setname <name> - set your name\n"
         "/skip - skip a description\n"
-        "/forget - clear our conversation history"
+        "/forget - clear our conversation history\n"
+        "/delete_photo <number> - delete one of your photos"
     )
 
 async def _reindex_photo(photo_id: int) -> None:
@@ -107,6 +107,7 @@ async def _reindex_photo(photo_id: int) -> None:
 
 
 MAX_DESCRIPTION_LENGTH = 2000
+MAX_PHOTO_BYTES = 10 * 1024 * 1024  
 
 
 @require_member
@@ -115,7 +116,16 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = update.message
     member = context.user_data["member"]
 
-    largest = message.photo[-1]  # the list goes small -> large
+    if not rate_limit.upload_limiter.allow(member.member_id):
+        await message.reply_text("That's a lot of photos at once. Please wait a minute and try again.")
+        return
+
+    largest = message.photo[-1] 
+
+    if largest.file_size and largest.file_size > MAX_PHOTO_BYTES:
+        await message.reply_text("That photo is too large. Please send a smaller one.")
+        return
+
     relative_path, absolute_path = photo_storage.new_photo_location()
 
     try:
@@ -158,6 +168,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Runs for normal text messages."""
     member = context.user_data["member"]
     photo_id = context.user_data.get("awaiting_description_for")
+
+    if not rate_limit.question_limiter.allow(member.member_id):
+        await update.message.reply_text(
+                "You're asking quickly! Please wait a moment and try again."
+            )
+        return
 
     if photo_id is None:
         question = update.message.text.strip()[:500]
@@ -481,6 +497,90 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    
+    logger.error("Unhandled error", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message is not None:
+        try:
+            await update.effective_message.reply_text(
+                "Sorry, something went wrong on my side. Please try again."
+            )
+        except TelegramError:
+            pass
+
+
+
+@require_member
+async def delete_photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/delete_photo <number> confirm : permanently delete a photo."""
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text(
+            "Usage: /delete_photo <number>\nI'll ask you to confirm before deleting."
+        )
+        return
+    photo_id = int(args[0])
+    member = context.user_data["member"]
+
+    if len(args) < 2 or args[1].lower() != "confirm":
+        await update.message.reply_text(
+            f"This permanently deletes photo #{photo_id}, its description and its "
+            f"search entry.\nTo continue, send: /delete_photo {photo_id} confirm"
+        )
+        return
+
+    try:
+        with SessionLocal() as session:
+            file_path = photo_service.delete_photo(
+                session, photo_id, member.member_id, member.role == Role.ADMIN
+            )
+    except LookupError:
+        await update.message.reply_text("I couldn't find that photo.")
+        return
+    except PermissionError:
+        await update.message.reply_text("You can only delete photos you uploaded.")
+        return
+
+    # The database record is gone. Now remove the search entry and the file.
+    try:
+        await asyncio.to_thread(vector_store.remove_memory, photo_id)
+    except Exception:
+        logger.exception("Could not remove search entry for photo #%s", photo_id)
+    try:
+        photo_storage.resolve_photo_path(file_path).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        logger.exception("Could not delete file for photo #%s", photo_id)
+
+    await update.message.reply_text(f"Photo #{photo_id} has been deleted.")
+
+
+@require_admin
+async def member_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: /member_status <telegram_id> <active|disabled>"""
+    args = context.args
+    if len(args) != 2 or not args[0].isdigit() or args[1].lower() not in ("active", "disabled"):
+        await update.message.reply_text(
+            "Usage: /member_status <telegram_id> <active|disabled>\n"
+            "A disabled member can no longer use the bot. Their photos stay."
+        )
+        return
+    target_id = int(args[0])
+    admin = context.user_data["member"]
+    if target_id == admin.telegram_user_id:
+        await update.message.reply_text("You can't change your own status.")
+        return
+
+    status = MemberStatus.ACTIVE if args[1].lower() == "active" else MemberStatus.DISABLED
+    with SessionLocal() as session:
+        member = member_service.get_by_telegram_id(session, target_id)
+        if member is None:
+            await update.message.reply_text("I couldn't find that Telegram ID.")
+            return
+        member_service.set_status(session, member, status)
+    await update.message.reply_text(f"Member status is now {status.value}.")
+
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Check your .env file.")
@@ -516,6 +616,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("find", find_command))
     application.add_handler(CommandHandler("reindex", reindex_command))
     application.add_handler(CommandHandler("forget", forget_command))
+    application.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("delete_photo", delete_photo_command))
+    application.add_handler(CommandHandler("member_status", member_status_command))
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return application
