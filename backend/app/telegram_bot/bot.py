@@ -20,7 +20,7 @@ from app.config import settings
 from app.services.auth_service import get_member
 from app.telegram_bot.auth import DENIED_TEXT, require_admin, require_member
 
-from app.database.models import Role
+from app.database.models import MessageRole, Role
 from app.database.session import SessionLocal, init_db
 from app.services import member_service
 
@@ -40,11 +40,13 @@ from app.rag import pipeline
 
 from app.telegram_bot import photo_sender
 
+from app.services import conversation_service
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
-# The HTTP library logs request URLs, which contain the bot token. Keep it quiet.
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -92,7 +94,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/new_event <name> | <date> | <location>\n"
         "/edit <photo number> <field> <value> - add people, location, date, event\n"
         "/setname <name> - set your name\n"
-        "/skip - skip a description"
+        "/skip - skip a description\n"
+        "/forget - clear our conversation history"
     )
 
 async def _reindex_photo(photo_id: int) -> None:
@@ -159,7 +162,27 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if photo_id is None:
         question = update.message.text.strip()[:500]
         await update.effective_chat.send_action(ChatAction.TYPING)
-        answer = await asyncio.to_thread(pipeline.answer_question, question)
+
+        with SessionLocal() as session:
+            conversation = conversation_service.get_or_create_active(
+                session, member.member_id, settings.conversation_ttl_minutes
+            )
+            conversation_id = conversation.id
+            history = conversation_service.recent_history(
+                session, conversation_id, settings.history_messages
+            )
+
+        answer = await asyncio.to_thread(pipeline.answer_question, question, history)
+
+        if not answer.failed:  
+            with SessionLocal() as session:
+                conversation_service.add_message(
+                    session, conversation_id, MessageRole.USER, question
+                )
+                conversation_service.add_message(
+                    session, conversation_id, MessageRole.BOT, answer.text
+                )
+
         await update.message.reply_text(answer.text)
         if answer.photo_ids:
             sent = await photo_sender.send_photos(update.message, answer.photo_ids)
@@ -447,6 +470,17 @@ async def reindex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+@require_member
+async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/forget : delete my conversation history."""
+    member = context.user_data["member"]
+    with SessionLocal() as session:
+        conversation_service.clear_history(session, member.member_id)
+    await update.message.reply_text(
+        "Done. I've cleared our conversation history. Your photos and memories are untouched."
+    )
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Check your .env file.")
@@ -481,6 +515,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("setname", setname_command))
     application.add_handler(CommandHandler("find", find_command))
     application.add_handler(CommandHandler("reindex", reindex_command))
+    application.add_handler(CommandHandler("forget", forget_command))
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return application

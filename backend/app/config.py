@@ -44,6 +44,10 @@ class Settings:
 
     gemini_model: str | None = os.getenv("GEMINI_MODEL") or None
     rag_top_k: int = 5
+    gemini_fallback_model: str | None = os.getenv("GEMINI_FALLBACK_MODEL") or None
+
+    conversation_ttl_minutes: int = int(os.getenv("CONVERSATION_TTL_MINUTES", "30"))
+    history_messages: int = 6  
 
 
 settings = Settings()
