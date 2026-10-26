@@ -1,6 +1,6 @@
 # Family Memory Assistant
 
-> **A Telegram-Based RAG Chatbot for Retrieving Family Memories and Photographs**
+> ### A Telegram-Based RAG Chatbot for Retrieving Family Memories and Photographs**
 >
 > ## To see the screenshots from the working bot use these links:
 https://drive.google.com/file/d/11JbtzEAq9kp64nROSLYBkLQISmy0Bc61/view?usp=sharing
